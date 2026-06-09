@@ -15,6 +15,6 @@ public class WebApp {
 
     @GetMapping("/")
     public String home() {
-        return "C'est un succès : l'application Web est en ligne grâce au pipeline CI/CD !";
+        return "Le projet à bien était déployé avec le pipeline.";
     }
 }
