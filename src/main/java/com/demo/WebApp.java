@@ -15,6 +15,6 @@ public class WebApp {
 
     @GetMapping("/")
     public String home() {
-        return "Le projet à bien était déployé avec le pipeline.";
+        return "Le projet a bien été déployé avec le pipeline.";
     }
 }
