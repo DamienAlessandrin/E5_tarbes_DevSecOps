@@ -1,0 +1,233 @@
+pipeline {
+
+    agent any
+
+    /*
+    Déclaration des paramètres.
+    Ils apparaîtront dans Jenkins avec l'option :
+    "Build with Parameters"
+    */
+    parameters {
+        string(
+            name: 'NAME',
+            defaultValue: 'DevOps User',
+            description: 'Please tell me your name'
+        )
+
+        text(
+            name: 'DESC',
+            defaultValue: 'Pipeline CI/CD Jenkins GitHub',
+            description: 'Description du Job'
+        )
+
+        booleanParam(
+            name: 'SKIP_TEST',
+            defaultValue: false,
+            description: 'Skip running Tests ?'
+        )
+
+        choice(
+            name: 'BRANCH',
+            choices: [
+                'main',
+                'dev',
+                'test'
+            ],
+            description: 'Choose Git branch'
+        )
+
+        password(
+            name: 'SONAR_SERVER_PWD',
+            description: 'Enter SONAR password'
+        )
+
+    }
+
+    environment {
+        APP_NAME = "webapp"
+        DOCKER_IMAGE = "damienalessandrin/webapp"
+        GITHUB_REPO = "https://github.com/DamienAlessandrin/E5_tarbes_DevSecOps.git"
+        TRIVY_EXE = "C:\\ProgramData\\chocolatey\\bin\\trivy.exe"
+        SNYK_EXE = "C:\\ProgramData\\chocolatey\\bin\\snyk.exe"
+    }
+
+    stages {
+
+        /*
+        Affichage des paramètres envoyés
+        par l'utilisateur
+        */
+        stage('01 - PRINT PARAMETERS') {
+            steps {
+                echo "Hello ${params.NAME}"
+
+                echo """
+                Job Description:
+                ${params.DESC}
+                """
+
+                echo "Branch Selected : ${params.BRANCH}"
+
+                echo "Skip Test : ${params.SKIP_TEST}"
+            }
+        }
+        
+        /*
+        Check les différents outils
+        */
+        stage('02 - CHECK TOOLS') {
+            steps {
+            bat """
+            echo ===== MAVEN =====
+            mvn -version
+            
+            echo ===== DOCKER =====
+            docker --version
+            
+            echo ===== TRIVY =====
+            "%TRIVY_EXE%" --version
+            
+            echo ===== SNYK =====
+            "%SNYK_EXE%" --version
+            """
+            }
+        }
+        
+        /*
+        Récupération du projet depuis Github
+        */
+        stage('03 - CHECKOUT GITHUB') {
+            steps {
+                echo "Downloading source code..."
+
+                git branch: "${params.BRANCH}",
+                url: "${env.GITHUB_REPO}"
+            }
+        }
+
+        /*
+        Compilation de l'application
+        */
+        stage('04 - BUILD APPLICATION') {
+            steps {
+
+                echo "Building Application"
+
+                bat """
+                echo Compilation en cours...
+                mvn clean package
+                """
+            }
+        }
+
+        /*
+        Tests unitaires
+        Le stage sera ignoré si SKIP_TEST=true
+        */
+        stage('05 - RUN TESTS') {
+            when {
+                expression {
+                    return params.SKIP_TEST == false
+                }
+            }
+            steps {
+                echo "Running Tests"
+
+                bat """
+                mvn test
+                """
+            }
+        }
+
+        /*
+        Analyse qualité SonarQube
+        */
+        stage('06 - SECURITY SCAN TRIVY') {
+            steps {
+                echo "Scanning source code"
+                
+                bat """
+                trivy image --severity HIGH,CRITICAL ${DOCKER_IMAGE}:latest
+                """
+            }
+        }
+
+        /*
+        Création image Docker
+        */
+        stage('07 - DOCKER BUILD') {
+            steps {
+                echo "Creating Docker image"
+
+                bat """
+                docker build -t ${DOCKER_IMAGE}:latest .
+                """
+            }
+        }
+
+        /*
+        Déploiement
+        */
+        stage('08 - DEPLOY') {
+            steps {
+                echo "Deploying Application"
+
+                bat """
+                docker stop ${APP_NAME} || echo 'Conteneur non existant'
+                docker rm ${APP_NAME} || echo 'Rien à supprimer'
+                docker run -d \
+                --name ${APP_NAME} \
+                -p 8081:8080 \
+                ${DOCKER_IMAGE}:latest
+                """
+            }
+        }
+        
+        /*
+        Scan en utilisant Snyk
+        */
+        stage('09 - SNYK CONTAINER SCAN') {
+            when {
+                expression {
+                    return params.SKIP_SNYK == false
+                    
+                }
+                
+            }
+            steps {
+                echo "Analyse de l'image Docker avec Snyk via archive Docker..."
+                withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+                bat """
+                "%SNYK_EXE%" auth %SNYK_TOKEN%
+                docker save %DOCKER_IMAGE%:latest -o snyk-image.tar
+                
+                "%SNYK_EXE%" container test docker-archive:snyk-image.tar ^
+                --severity-threshold=high
+                """
+                }
+            }
+        }
+    }
+
+    /*
+    Actions exécutées à la fin
+    */
+    post {
+        success {
+            echo """
+            =========================
+            PIPELINE SUCCESS
+            Application deployed
+            =========================
+            """
+        }
+        failure {
+            echo """
+            =========================
+            PIPELINE FAILED
+            Please check logs
+            =========================
+            """
+        }
+    }
+}
